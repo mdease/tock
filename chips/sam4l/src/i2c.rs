@@ -12,7 +12,7 @@
 use core::cell::Cell;
 use dma::{DMAChannel, DMAClient, DMAPeripheral};
 use kernel::{ClockInterface, StaticRef};
-use kernel::common::VolatileCell;
+use kernel::common::regs::{ReadOnly, ReadWrite, WriteOnly};
 use kernel::common::peripherals::{PeripheralManagement, PeripheralManager};
 use kernel::common::take_cell::TakeCell;
 use kernel::hil;
@@ -23,23 +23,23 @@ use pm;
 #[repr(C)]
 #[allow(dead_code)]
 struct TWIMRegisters {
-    control: VolatileCell<u32>,
-    clock_waveform_generator: VolatileCell<u32>,
-    smbus_timing: VolatileCell<u32>,
-    command: VolatileCell<u32>,
-    next_command: VolatileCell<u32>,
-    receive_holding: VolatileCell<u32>,
-    transmit_holding: VolatileCell<u32>,
-    status: VolatileCell<u32>,
-    interrupt_enable: VolatileCell<u32>,
-    interrupt_disable: VolatileCell<u32>,
-    interrupt_mask: VolatileCell<u32>,
-    status_clear: VolatileCell<u32>,
-    parameter: VolatileCell<u32>,
-    version: VolatileCell<u32>,
-    hsmode_clock_waveform_generator: VolatileCell<u32>,
-    slew_rate: VolatileCell<u32>,
-    hsmod_slew_rate: VolatileCell<u32>,
+    cr: WriteOnly<u32, Control::Register>,
+    cwgr: ReadWrite<u32, ClockWaveformGenerator::Register>,
+    smbtr: ReadWrite<u32, SmbusTiming::Register>,
+    cmdr: ReadWrite<u32, Command::Register>,
+    ncmdr: ReadWrite<u32, Command::Register>,
+    rhr: ReadOnly<u32, ReceiveHolding::Register>,
+    thr: WriteOnly<u32, TransmitHolding::Register>,
+    sr: ReadOnly<u32, Status::Register>,
+    ier: WriteOnly<u32, Interrupt::Register>,
+    idr: WriteOnly<u32, Interrupt::Register>,
+    imr: ReadOnly<u32, Interrupt::Register>,
+    scr: WriteOnly<u32, StatusClear::Register>,
+    pr: ReadOnly<u32>,
+    vr: ReadOnly<u32>,
+    hscwgr: ReadWrite<u32>,
+    srr: ReadWrite<u32, SlewRate::Register>,
+    hssrr: ReadWrite<u32>,
 }
 
 // Listing of all registers related to the TWIS peripheral.
@@ -47,23 +47,422 @@ struct TWIMRegisters {
 #[repr(C)]
 #[allow(dead_code)]
 struct TWISRegisters {
-    control: VolatileCell<u32>,
-    nbytes: VolatileCell<u32>,
-    timing: VolatileCell<u32>,
-    receive_holding: VolatileCell<u32>,
-    transmit_holding: VolatileCell<u32>,
-    packet_error_check: VolatileCell<u32>,
-    status: VolatileCell<u32>,
-    interrupt_enable: VolatileCell<u32>,
-    interrupt_disable: VolatileCell<u32>,
-    interrupt_mask: VolatileCell<u32>,
-    status_clear: VolatileCell<u32>,
-    parameter: VolatileCell<u32>,
-    version: VolatileCell<u32>,
-    hsmode_timing: VolatileCell<u32>,
-    slew_rate: VolatileCell<u32>,
-    hsmod_slew_rate: VolatileCell<u32>,
+    cr: ReadWrite<u32, ControlSlave::Register>,
+    nbytes: ReadWrite<u32, Nbytes::Register>,
+    tr: ReadWrite<u32, Timing::Register>,
+    rhr: ReadOnly<u32, ReceiveHolding::Register>,
+    thr: WriteOnly<u32, TransmitHolding::Register>,
+    pecr: ReadOnly<u32, PacketErrorCheck::Register>,
+    sr: ReadOnly<u32, StatusSlave::Register>,
+    ier: WriteOnly<u32, InterruptSlave::Register>,
+    idr: WriteOnly<u32, InterruptSlave::Register>,
+    imr: ReadOnly<u32, InterruptSlave::Register>,
+    scr: WriteOnly<u32, StatusClearSlave::Register>,
+    pr: ReadOnly<u32>,
+    vr: ReadOnly<u32>,
+    hstr: ReadWrite<u32>,
+    srr: ReadWrite<u32, SlewRateSlave::Register>,
+    hssrr: ReadWrite<u32>,
 }
+
+register_bitfields![u32,
+    Control [
+        /// Stop the Current Transfer
+        STOP 8,
+        /// Software Reset
+        SWRST 7,
+        /// SMBus Disable
+        SMDIS 5,
+        /// SMBus Enable
+        SMEN 4,
+        /// Master Disable
+        MDIS 1,
+        /// Master Enable
+        MEN 0
+    ],
+
+    ClockWaveformGenerator [
+        /// Clock Prescaler
+        EXP OFFSET(28) NUMBITS(3) [],
+        /// Data Setup and Hold Cycles
+        DATA OFFSET(24) NUMBITS(4) [],
+        /// START and STOP Cycles
+        STASTO OFFSET(16) NUMBITS(8) [],
+        /// Clock High Cycles
+        HIGH OFFSET(8) NUMBITS(8) [],
+        /// Clock Low Cycles
+        LOW OFFSET(0) NUMBITS(8) []
+    ],
+
+    SmbusTiming [
+        /// SMBus Timeout Clock Prescaler
+        EXP OFFSET(28) NUMBITS(4) [],
+        /// Clock High Maximum Cycles
+        THMAX OFFSET(16) NUMBITS(8) [],
+        /// Master Clock Stretch Maximum Cycles
+        TLWOM OFFSET(8) NUMBITS(8) [],
+        /// Slave Clock Stretch Maximum Cycles
+        TLOWS OFFSET(0) NUMBITS(8) []
+    ],
+
+    Command [
+        /// HS-mode Master Code
+        HSMCODE OFFSET(28) NUMBITS(3) [],
+        /// HS-mode
+        HS OFFSET(26) NUMBITS(1) [
+            NoHSMode = 0,
+            HSMode = 1
+        ],
+        /// ACK Last Master RX Byte
+        ACKLAST OFFSET(25) NUMBITS(1) [
+            NackLast = 0,
+            AckLast = 1
+        ],
+        /// Packet Error Checking Enable
+        PECEN OFFSET(24) NUMBITS(1) [
+            NoPecByteVerification = 0,
+            PecByteVerification = 1
+        ],
+        /// Number of Data Bytes in Transfer
+        NBYTES OFFSET(16) NUMBITS(8) [],
+        /// CMDR Valid
+        VALID OFFSET(15) NUMBITS(1) [],
+        /// Send STOP Condition
+        STOP OFFSET(14) NUMBITS(1) [
+            NoSendStop = 0,
+            SendStop = 1
+        ],
+        /// Send START Condition
+        START OFFSET(13) NUMBITS(1) [
+            NoStartCondition = 0,
+            StartCondition = 1
+        ],
+        /// Transfer is to Same Address as Previous Address
+        REPSAME OFFSET(12) NUMBITS(1) [],
+        /// Ten Bit Addressing Mode
+        TENBIT OFFSET(11) NUMBITS(1) [
+            SevenBitAddressing = 0,
+            TenBitAddressing = 1
+        ],
+        /// Slave Address
+        SADR OFFSET(1) NUMBITS(10) [],
+        /// Transfer Direction
+        READ OFFSET(0) NUMBITS(1) [
+            Transmit = 0,
+            Receive = 1
+        ]
+    ],
+
+    ReceiveHolding [
+        /// Received Data
+        RXDATA OFFSET(0) NUMBITS(8) []
+    ],
+
+    TransmitHolding [
+        /// Data to Transmit
+        TXDATA OFFSET(0) NUMBITS(8) []
+    ],
+
+    Status [
+        /// ACK in HS-mode Master Code Phase Received
+        HSMCACK 17,
+        /// Master Interface Enable
+        MENB 16,
+        /// Stop Request Accepted
+        STOP 14,
+        /// PEC Error
+        PECERR 13,
+        /// Timeout
+        TOUT 12,
+        /// Arbitration Lost
+        ARBLST 10,
+        /// NAK in Data Phase Received
+        DNAK 9,
+        /// NAK in Address Phase Received
+        ANAK 8,
+        /// Two-wire Bus is Free
+        BUSFREE 5,
+        /// Master Interface is Idle
+        IDLE 4,
+        /// Command Complete
+        CCOMP 3,
+        /// Ready for More Commands
+        CRDY 2,
+        /// THR Data Ready
+        TXRDY 1,
+        /// RHR Data Ready
+        RXRDY 0
+    ],
+
+    Interrupt [
+        /// ACK in HS-mode Master Code Phase Received
+        HSMCACK 17,
+        /// Stop Request Accepted
+        STOP 14,
+        /// PEC Error
+        PECERR 13,
+        /// Timeout
+        TOUT 12,
+        /// Arbitration Lost
+        ARBLST 10,
+        /// NAK in Data Phase Received
+        DNAK 9,
+        /// NAK in Address Phase Received
+        ANAK 8,
+        /// Two-wire Bus is Free
+        BUSFREE 5,
+        /// Master Interface is Idle
+        IDLE 4,
+        /// Command Complete
+        CCOMP 3,
+        /// Ready for More Commands
+        CRDY 2,
+        /// THR Data Ready
+        TXRDY 1,
+        /// RHR Data Ready
+        RXRDY 0
+    ],
+
+    StatusClear [
+        /// ACK in HS-mode Master Code Phase Received
+        HSMCACK 17,
+        /// Stop Request Accepted
+        STOP 14,
+        /// PEC Error
+        PECERR 13,
+        /// Timeout
+        TOUT 12,
+        /// Arbitration Lost
+        ARBLST 10,
+        /// NAK in Data Phase Received
+        DNAK 9,
+        /// NAK in Address Phase Received
+        ANAK 8,
+        /// Command Complete
+        CCOMP 3
+    ],
+
+    SlewRate [
+        /// Input Spike Filter Control
+        FILTER OFFSET(28) NUMBITS(2) [
+            StandardOrFast = 2,
+            FastModePlus = 3
+        ],
+        /// Clock Slew Limit
+        CLSLEW OFFSET(24) NUMBITS(2) [],
+        /// Clock Drive Strength LOW
+        CLDRIVEL OFFSET(16) NUMBITS(3) [],
+        /// Data Slew Limit
+        DASLEW OFFSET(8) NUMBITS(2) [],
+        /// Data Drive Strength LOW
+        DADRIVEL OFFSET(0) NUMBITS(3) []
+    ]
+];
+
+register_bitfields![u32,
+    ControlSlave [
+        /// Ten Bit Address Match
+        TENBIT OFFSET(26) NUMBITS(1) [
+            Disable = 0,
+            Enable = 1
+        ],
+        /// Slave Address
+        ADR OFFSET(16) NUMBITS(10) [],
+        /// Stretch Clock on Data Byte Reception
+        SODR OFFSET(15) NUMBITS(1) [],
+        /// Stretch Clock on Address Match
+        SOAM OFFSET(14) NUMBITS(1) [
+            NoStretch = 0,
+            Stretch = 1
+        ],
+        /// NBYTES Count Up
+        CUP OFFSET(13) NUMBITS(1) [
+            CountDown = 0,
+            CountUp = 1
+        ],
+        /// Slave Receiver Data Phase ACK Value
+        ACK OFFSET(12) NUMBITS(1) [
+            AckLow = 0,
+            AckHigh = 1
+        ],
+        /// Packet Error Checking Enable
+        PECEN OFFSET(11) NUMBITS(1) [
+            Disable = 0,
+            Enable = 1
+        ],
+        /// SMBus Host Header
+        SMHH OFFSET(10) NUMBITS(1) [
+            NoAckHostHeader = 0,
+            AckHostHeader = 1
+        ],
+        /// SMBus Default Address
+        SMDA OFFSET(9) NUMBITS(1) [
+            NoAckDefaultAddress = 0,
+            AckDefaultAddress = 1
+        ],
+        /// Software Reset
+        SWRST OFFSET(7) NUMBITS(1) [],
+        /// Clock Stretch Enable
+        STREN OFFSET(4) NUMBITS(1) [
+            Disable = 0,
+            Enable = 1
+        ],
+        /// General Call Address Match
+        GCMATCH OFFSET(3) NUMBITS(1) [
+            NoAckGeneralCallAddress = 0,
+            AckGeneralCallAddress = 1
+        ],
+        /// Slave Address Match
+        SMATCH OFFSET(2) NUMBITS(1) [
+            NoAckSlaveAddres = 0,
+            AckSlaveAddres = 1
+        ],
+        /// SMBus Mode Enable
+        SMEN OFFSET(1) NUMBITS(1) [
+            Disable = 0,
+            Enable = 1
+        ],
+        /// Slave Enable
+        SEN OFFSET(0) NUMBITS(1) [
+            Disable = 0,
+            Enable = 1
+        ]
+    ],
+
+    Nbytes [
+        NBYTES OFFSET(0) NUMBITS(8) []
+    ],
+
+    Timing [
+        /// Clock Prescaler
+        EXP OFFSET(28) NUMBITS(4) [],
+        /// Data Setup Cycles
+        SUDAT OFFSET(16) NUMBITS(8) [],
+        /// SMBus Timeout Cycles
+        TTOUT OFFSET(8) NUMBITS(8) [],
+        /// SMBus Low Cycles
+        TLOWS OFFSET(0) NUMBITS(8) []
+    ],
+
+    PacketErrorCheck [
+        /// Calculated PEC Value
+        PEC OFFSET(0) NUMBITS(8) []
+    ],
+
+    StatusSlave [
+        /// Byte Transfer Finished
+        BTF 23,
+        /// Repeated Start Received
+        REP 22,
+        /// Stop Received
+        STO 21,
+        /// SMBus Default Address Match
+        SMBDAM 20,
+        /// SMBus Host Header Address Match
+        SMBHHM 19,
+        /// General Call Match
+        GCM 17,
+        /// Slave Address Match
+        SAM 16,
+        /// Bus Error
+        BUSERR 14,
+        /// SMBus PEC Error
+        SMBPECERR 13,
+        /// SMBus Timeout
+        SMBTOUT 12,
+        /// NAK Received
+        NAK 8,
+        /// Overrun
+        ORUN 7,
+        /// Underrun
+        URUN 6,
+        /// Transmitter Mode
+        TRA 5,
+        /// Transmission Complete
+        TCOMP 3,
+        /// Slave Enabled
+        SEN 2,
+        /// THR Data Ready
+        TXRDY 1,
+        /// RHR Data Ready
+        RXRDY 0
+    ],
+
+    InterruptSlave [
+        /// Byte Transfer Finished
+        BTF 23,
+        /// Repeated Start Received
+        REP 22,
+        /// Stop Received
+        STO 21,
+        /// SMBus Default Address Match
+        SMBDAM 20,
+        /// SMBus Host Header Address Match
+        SMBHHM 19,
+        /// General Call Match
+        GCM 17,
+        /// Slave Address Match
+        SAM 16,
+        /// Bus Error
+        BUSERR 14,
+        /// SMBus PEC Error
+        SMBPECERR 13,
+        /// SMBus Timeout
+        SMBTOUT 12,
+        /// NAK Received
+        NAK 8,
+        /// Overrun
+        ORUN 7,
+        /// Underrun
+        URUN 6,
+        /// Transmission Complete
+        TCOMP 3,
+        /// THR Data Ready
+        TXRDY 1,
+        /// RHR Data Ready
+        RXRDY 0
+    ],
+
+    StatusClearSlave [
+        /// Byte Transfer Finished
+        BTF 23,
+        /// Repeated Start Received
+        REP 22,
+        /// Stop Received
+        STO 21,
+        /// SMBus Default Address Match
+        SMBDAM 20,
+        /// SMBus Host Header Address Match
+        SMBHHM 19,
+        /// General Call Match
+        GCM 17,
+        /// Slave Address Match
+        SAM 16,
+        /// Bus Error
+        BUSERR 14,
+        /// SMBus PEC Error
+        SMBPECERR 13,
+        /// SMBus Timeout
+        SMBTOUT 12,
+        /// NAK Received
+        NAK 8,
+        /// Overrun
+        ORUN 7,
+        /// Underrun
+        URUN 6,
+        /// Transmission Complete
+        TCOMP 3
+    ],
+
+    SlewRateSlave [
+        /// Input Spike Filter Control
+        FILTER OFFSET(28) NUMBITS(2) [],
+        /// Data Slew Limit
+        DASLEW OFFSET(8) NUMBITS(2) [],
+        /// Data Drive Strength LOW
+        DADRIVEL OFFSET(0) NUMBITS(3) []
+    ]
+];
 
 // The addresses in memory (7.1 of manual) of the TWIM peripherals
 const I2C_BASE_ADDRS: [StaticRef<TWIMRegisters>; 4] = unsafe {
