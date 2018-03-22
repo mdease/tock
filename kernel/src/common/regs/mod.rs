@@ -117,6 +117,11 @@ impl<T: IntLike, R: RegisterLongName> ReadWrite<T, R> {
     }
 
     #[inline]
+    pub fn extract(&self) -> LocalRegisterCopy<T, R> {
+        LocalRegisterCopy::new(self.get())
+    }
+
+    #[inline]
     pub fn write(&self, field: FieldValue<T, R>) {
         self.set(field.value);
     }
@@ -143,6 +148,46 @@ impl<T: IntLike, R: RegisterLongName> ReadWrite<T, R> {
     }
 }
 
+pub struct LocalRegisterCopy<T: IntLike, R: RegisterLongName = ()> {
+    value: T,
+    associated_register: PhantomData<R>,
+}
+
+#[allow(dead_code)]
+impl<T: IntLike, R: RegisterLongName> LocalRegisterCopy<T, R> {
+    pub const fn new(value: T) -> Self {
+        LocalRegisterCopy {
+            value: value,
+            associated_register: PhantomData,
+        }
+    }
+
+    #[inline]
+    pub fn get(&self) -> T {
+        self.value
+    }
+
+    #[inline]
+    pub fn read(&self, field: Field<T, R>) -> T {
+        (self.value & (field.mask << field.shift)) >> field.shift
+    }
+
+    #[inline]
+    pub fn is_set(&self, field: Field<T, R>) -> bool {
+        self.read(field) != T::zero()
+    }
+
+    #[inline]
+    pub fn matches_any(&self, field: FieldValue<T, R>) -> bool {
+        self.value & field.mask != T::zero()
+    }
+
+    #[inline]
+    pub fn matches_all(&self, field: FieldValue<T, R>) -> bool {
+        self.value & field.mask == field.value
+    }
+}
+
 #[allow(dead_code)]
 impl<T: IntLike, R: RegisterLongName> ReadOnly<T, R> {
     pub const fn new(value: T) -> Self {
@@ -160,6 +205,11 @@ impl<T: IntLike, R: RegisterLongName> ReadOnly<T, R> {
     #[inline]
     pub fn read(&self, field: Field<T, R>) -> T {
         (self.get() & (field.mask << field.shift)) >> field.shift
+    }
+
+    #[inline]
+    pub fn extract(&self) -> LocalRegisterCopy<T, R> {
+        LocalRegisterCopy::new(self.get())
     }
 
     #[inline]
