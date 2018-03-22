@@ -590,8 +590,9 @@ impl PeripheralManagement<TWIMClock> for I2CHw {
     }
 
     fn after_peripheral_access(&self, clock: &TWIMClock, registers: &TWIMRegisters) {
-        let mask = registers.interrupt_mask.get();
-        if mask == 0 {
+        // If there are no interrupts active then we can disable the clock
+        // for this peripheral.
+        if registers.imr.get() == 0 {
             clock.disable();
         }
     }
@@ -604,7 +605,7 @@ impl PeripheralManagement<TWISClock> for I2CHw {
     fn get_registers<'a>(&'a self) -> &'a TWISRegisters {
         &*self.slave_mmio_address
             .as_ref()
-            .expect("Access of non-existant slave")
+            .expect("Access of non-existent slave")
     }
 
     fn get_clock(&self) -> &TWISClock {
@@ -618,9 +619,9 @@ impl PeripheralManagement<TWISClock> for I2CHw {
     }
 
     fn after_peripheral_access(&self, clock: &TWISClock, registers: &TWISRegisters) {
-        let mask = registers.interrupt_mask.get();
-        //if mask & 0x00000008 == 0 {
-        if mask == 0 {
+        // If there are no interrupts active then we can disable the clock
+        // for this peripheral.
+        if registers.imr.get() == 0 {
             clock.disable();
         }
     }
@@ -727,9 +728,11 @@ impl I2CHw {
         let data = 0;
         let stasto = f_prescaled;
 
-        let cwgr = ((exp & 0x7) << 28) | ((data & 0xF) << 24) | ((stasto & 0xFF) << 16)
-            | ((high & 0xFF) << 8) | ((low & 0xFF) << 0);
-        twim.registers.clock_waveform_generator.set(cwgr);
+        twim.registers.cwgr.write(ClockWaveformGenerator::EXP.val(exp) +
+            ClockWaveformGenerator::DATA.val(data) +
+            ClockWaveformGenerator::STASTO.val(stasto) +
+            ClockWaveformGenerator::HIGH.val(high) +
+            ClockWaveformGenerator::LOW.val(low))
     }
 
     pub fn set_dma(&self, dma: &'static DMAChannel) {
@@ -750,20 +753,43 @@ impl I2CHw {
         let old_status = {
             let twim = &TWIMRegisterManager::new(&self);
 
-            let old_status = twim.registers.status.get();
+            // let old_status = twim.registers.sr.get();
+            let old_status = twim.registers.sr.extract();
 
-            twim.registers.status_clear.set(!0);
+            // Clear all status registers.
+            twim.registers.scr.write(StatusClear::HSMCACK::SET +
+                StatusClear::STOP::SET +
+                StatusClear::PECERR::SET +
+                StatusClear::TOUT::SET +
+                StatusClear::ARBLST::SET +
+                StatusClear::DNAK::SET +
+                StatusClear::ANAK::SET +
+                StatusClear::CCOMP::SET
+                );
 
             old_status
         };
 
+        // let err = match old_status {
+        //     x if x & (1 <<  8) != 0 /*ANACK*/  => Some(Error::AddressNak),
+        //     x if x & (1 <<  9) != 0 /*DNACK*/  => Some(Error::DataNak),
+        //     x if x & (1 << 10) != 0 /*ARBLST*/ => Some(Error::ArbitrationLost),
+        //     x if x & (1 <<  3) != 0 /*CCOMP*/   => Some(Error::CommandComplete),
+        //     _ => None
+        // };
+
         let err = match old_status {
-            x if x & (1 <<  8) != 0 /*ANACK*/  => Some(Error::AddressNak),
-            x if x & (1 <<  9) != 0 /*DNACK*/  => Some(Error::DataNak),
-            x if x & (1 << 10) != 0 /*ARBLST*/ => Some(Error::ArbitrationLost),
-            x if x & (1 <<  3) != 0 /*CCOMP*/   => Some(Error::CommandComplete),
+            x if x.is_set(Status::ANAK) /*ANACK*/  => Some(Error::AddressNak),
+            x if x.is_set(Status::DNAK)  /*DNACK*/  => Some(Error::DataNak),
+            x if x.is_set(Status::ARBLST)  /*ARBLST*/ => Some(Error::ArbitrationLost),
+            x if x.is_set(Status::CCOMP) /*CCOMP*/   => Some(Error::CommandComplete),
             _ => None
         };
+
+        // if twim.registers.sr.matches_any(Status::ANAK::SET +
+        //     Status::DNAK::SET + Status::ARBLST::SET) {
+        //     // Some error occurred. Determine which
+        // }
 
         let on_deck = self.on_deck.get();
         self.on_deck.set(None);
@@ -808,7 +834,7 @@ impl I2CHw {
                 // because we will never get another byte and therefore
                 // no more interrupts. So, we just read the byte we have
                 // and call this I2C command complete.
-                if (len == 1) && (old_status & 0x01 != 0) {
+                if (len == 1) && old_status.is_set(Status::TXRDY) {
                     let the_byte = {
                         let twim = &TWIMRegisterManager::new(&self);
 
