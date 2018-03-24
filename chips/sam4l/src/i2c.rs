@@ -976,13 +976,12 @@ impl I2CHw {
             let interrupts = status & imr;
 
             // Check for errors.
-            if interrupts & ((1 << 14) | (1 << 13) | (1 << 12) | (1 << 7) | (1 << 6)) > 0 {
             if interrupts.matches_any(
                 StatusSlave::BUSERR::SET +
                 StatusSlave::SMBPECERR::SET +
                 StatusSlave::SMBTOUT::SET +
                 StatusSlave::ORUN::SET +
-                StatusSlave::URUN::SET)
+                StatusSlave::URUN::SET) {
                 // From the datasheet: If a bus error (misplaced START or STOP)
                 // condition is detected, the SR.BUSERR bit is set and the TWIS
                 // waits for a new START condition.
@@ -1044,14 +1043,15 @@ impl I2CHw {
                     // Slave is in receive mode, AKA we got a write.
 
                     // Get transmission complete and rxready interrupts.
-                    twis.registers.interrupt_enable.set((1 << 3) | (1 << 0));
+                    twis.registers.ier.write(InterruptSlave::TCOMP::SET +
+                        InterruptSlave::RXRDY::SET);
 
                     // Set index to 0
                     self.slave_write_buffer_index.set(0);
 
                     if self.slave_write_buffer.is_some() {
                         // Clear to continue with existing buffer.
-                        twis.registers.status_clear.set(status);
+                        twis.registers.scr.replace(status);
                     } else {
                         // Call to upper layers asking for a buffer to
                         // read into.
@@ -1063,16 +1063,16 @@ impl I2CHw {
             } else {
                 // Did not get address match interrupt.
 
-                if interrupts & (1 << 3) > 0 {
+                if interrupts.is_iset(StatusSlave::TCOMP) {
                     // Transmission complete
 
                     let nbytes = twis.registers.nbytes.get();
 
-                    twis.registers.interrupt_disable.set(0xFFFFFFFF);
-                    twis.registers.interrupt_enable.set(1 << 16);
-                    twis.registers.status_clear.set(status);
+                    twis.registers.idr.set(!0);
+                    twis.registers.ier.write(InterruptSlave::SAM::SET);
+                    twis.registers.scr.replace(status);
 
-                    if status & (1 << 5) > 0 {
+                    if status.is_set(StatusSlave::TRA::SET) {
                         // read
                         self.slave_client.get().map(|client| {
                             self.slave_read_buffer.take().map(|buffer| {
@@ -1091,12 +1091,12 @@ impl I2CHw {
 
                         if len > idx {
                             self.slave_write_buffer.map(|buffer| {
-                                buffer[idx as usize] = twis.registers.receive_holding.get() as u8;
+                                buffer[idx as usize] = twis.registers.rhr.read(ReceiveHolding::RXDATA) as u8;
                             });
                             self.slave_write_buffer_index.set(idx + 1);
                         } else {
                             // Just drop on floor
-                            twis.registers.receive_holding.get();
+                            twis.registers.rhr.get();
                         }
 
                         self.slave_client.get().map(|client| {
@@ -1109,7 +1109,7 @@ impl I2CHw {
                             });
                         });
                     }
-                } else if interrupts & (1 << 23) > 0 {
+                } else if interrupts.is_set(StatusSlave::BTF) {
                     // Byte transfer finished. Send the next byte from the
                     // buffer.
 
@@ -1120,23 +1120,22 @@ impl I2CHw {
 
                         if len > idx {
                             self.slave_read_buffer.map(|buffer| {
-                                twis.registers
-                                    .transmit_holding
-                                    .set(buffer[idx as usize] as u32);
+                                twis.register.thr.write(TransmitHolding::TXDATA.val(buffer[idx as usize] as u32));
                             });
                             self.slave_read_buffer_index.set(idx + 1);
                         } else {
                             // Send dummy byte
-                            twis.registers.transmit_holding.set(0xdf);
+                            twis.registers.thr.write(TransmitHolding::TXDATA.val(0xdf));
                         }
                     } else {
                         // Send a default byte
-                        twis.registers.transmit_holding.set(0xdc);
+                        twis.registers.thr.write(TransmitHolding::TXDATA.val(0xdc));
                     }
 
                     // Make it happen by clearing status.
-                    twis.registers.status_clear.set(status);
-                } else if interrupts & (1 << 0) > 0 {
+                    twis.registers.scr.replace(status);
+
+                } else if interrupts.is_set(RXRDY) {
                     // Receive byte ready.
 
                     if self.slave_write_buffer.is_some() {
@@ -1147,7 +1146,7 @@ impl I2CHw {
                         // bit fixes that. However, sometimes in the middle of a
                         // transfer we get an RXREADY interrupt where the BTF
                         // bit is NOT set. I don't know why.
-                        if status & (1 << 23) > 0 || self.slave_write_buffer_index.get() > 0 {
+                        if status.is_set(StatusSlave::BTF) || self.slave_write_buffer_index.get() > 0 {
                             // Have buffer to read into
                             let len = self.slave_write_buffer_len.get();
                             let idx = self.slave_write_buffer_index.get();
@@ -1155,23 +1154,23 @@ impl I2CHw {
                             if len > idx {
                                 self.slave_write_buffer.map(|buffer| {
                                     buffer[idx as usize] =
-                                        twis.registers.receive_holding.get() as u8;
+                                        twis.registers.rhr.read(ReceiveHolding::RXDATA) as u8;
                                 });
                                 self.slave_write_buffer_index.set(idx + 1);
                             } else {
                                 // Just drop on floor
-                                twis.registers.receive_holding.get();
+                                twis.registers.rhr.get();
                             }
                         } else {
                             // Just drop on floor
-                            twis.registers.receive_holding.get();
+                            twis.registers.rhr.get();
                         }
                     } else {
                         // Just drop on floor
-                        twis.registers.receive_holding.get();
+                        twis.registers.rhr.get();
                     }
 
-                    twis.registers.status_clear.set(status);
+                    twis.registers.scr.replace(status);
                 }
             }
         }
@@ -1186,14 +1185,14 @@ impl I2CHw {
             if self.slave_mmio_address.is_some() {
                 let twis = &TWISRegisterManager::new(&self);
 
-                let status = twis.registers.status.get();
-                let imr = twis.registers.interrupt_mask.get();
+                let status = twis.registers.sr.extract();
+                let imr = twis.registers.imr.extract();
                 let interrupts = status & imr;
 
                 // Address match status bit still set, so we need to tell the TWIS
                 // to continue.
-                if (interrupts & (1 << 16) > 0) && (status & (1 << 5) == 0) {
-                    twis.registers.status_clear.set(status);
+                if interrupts.is_set(StatusSlave::SAM) && !status.is_set(StatusSlave::TRA) {
+                    twis.registers.scr.replace(status);
                 }
             }
         }
@@ -1210,37 +1209,37 @@ impl I2CHw {
                 let twis = &TWISRegisterManager::new(&self);
 
                 // Check to see if we should send the first byte.
-                let status = twis.registers.status.get();
-                let imr = twis.registers.interrupt_mask.get();
+                let status = twis.registers.sr.extract();
+                let imr = twis.registers.imr.extract();
                 let interrupts = status & imr;
 
                 // Address match status bit still set. We got this function
                 // call in response to an incoming read. Send the first
                 // byte.
-                if (interrupts & (1 << 16) > 0) && (status & (1 << 5) > 0) {
-                    twis.registers.status_clear.set(1 << 23);
+                if interrupts.is_set(StatusSlave::SAM) && status.is_set(StatusSlave::TRA) {
+                    twis.registers.scr.write(StatusClearSlave::BTF::SET);
 
                     let len = self.slave_read_buffer_len.get();
 
                     if len >= 1 {
                         self.slave_read_buffer.map(|buffer| {
-                            twis.registers.transmit_holding.set(buffer[0] as u32);
+                            twis.registers.thr.write(TransmitHolding::TXDATA(buffer[0] as u32));
                         });
                         self.slave_read_buffer_index.set(1);
                     } else {
                         // Send dummy byte
-                        twis.registers.transmit_holding.set(0x75);
+                        twis.registers.thr.write(TransmitHolding::TXDATA(0x75));
                     }
 
                     // Make it happen by clearing status.
-                    twis.registers.status_clear.set(status);
+                    twis.registers.scr.replace(status);
                 }
             }
         }
     }
 
     fn slave_disable_interrupts(&self, twis: &TWISRegisterManager) {
-        twis.registers.interrupt_disable.set(!0);
+        twis.registers.idr.set(!0);
     }
 
     pub fn slave_set_address(&self, address: u8) {
