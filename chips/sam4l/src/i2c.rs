@@ -12,7 +12,7 @@
 use core::cell::Cell;
 use dma::{DMAChannel, DMAClient, DMAPeripheral};
 use kernel::{ClockInterface, StaticRef};
-use kernel::common::regs::{ReadOnly, ReadWrite, WriteOnly};
+use kernel::common::regs::{FieldValue, ReadOnly, ReadWrite, WriteOnly};
 use kernel::common::peripherals::{PeripheralManagement, PeripheralManager};
 use kernel::common::take_cell::TakeCell;
 use kernel::hil;
@@ -314,8 +314,8 @@ register_bitfields![u32,
         ],
         /// Slave Address Match
         SMATCH OFFSET(2) NUMBITS(1) [
-            NoAckSlaveAddres = 0,
-            AckSlaveAddres = 1
+            NoAckSlaveAddress = 0,
+            AckSlaveAddress = 1
         ],
         /// SMBus Mode Enable
         SMEN OFFSET(1) NUMBITS(1) [
@@ -875,17 +875,17 @@ impl I2CHw {
         }
     }
 
-    fn setup_xfer(&self, twim: &TWIMRegisterManager, chip: u8, flags: usize, direction: bool, len: u8) {
+    fn setup_xfer(&self, twim: &TWIMRegisterManager, chip: u8, flags: FieldValue<u32, Command::Register>, direction: FieldValue<u32, Command::Register>, len: u8) {
         // disable before configuring
         twim.registers.cr.write(Control::MDIS::SET);
 
         // Configure the command register with the settings for this transfer.
         twim.registers.cmdr.write(
-            Command::SADR.val(chip) +
-            flags
+            Command::SADR.val(chip as u32) +
+            flags +
             Command::VALID::SET +
-            Command::NBYTES.val(len) +
-            read
+            Command::NBYTES.val(len as u32) +
+            direction
             );
         twim.registers.ncmdr.set(0);
 
@@ -901,18 +901,18 @@ impl I2CHw {
         &self,
         twim: &TWIMRegisterManager,
         chip: u8,
-        flags: usize,
-        direction: bool,
+        flags: FieldValue<u32, Command::Register>,
+        direction: FieldValue<u32, Command::Register>,
         len: u8,
     ) {
         // disable before configuring
         twim.registers.cr.write(Control::MDIS::SET);
 
         twim.registers.ncmdr.write(
-            Command::SADR.val(chip) +
-            flags
+            Command::SADR.val(chip as u32) +
+            flags +
             Command::VALID::SET +
-            Command::NBYTES.val(len) +
+            Command::NBYTES.val(len as u32) +
             direction
             );
 
@@ -925,7 +925,7 @@ impl I2CHw {
         twim.registers.cr.write(Control::MEN::SET);
     }
 
-    fn write(&self, chip: u8, flags: usize, data: &'static mut [u8], len: u8) {
+    fn write(&self, chip: u8, flags: FieldValue<u32, Command::Register>, data: &'static mut [u8], len: u8) {
         let twim = &TWIMRegisterManager::new(&self);
         self.dma.get().map(move |dma| {
             dma.enable();
@@ -936,7 +936,7 @@ impl I2CHw {
         });
     }
 
-    fn read(&self, chip: u8, flags: usize, data: &'static mut [u8], len: u8) {
+    fn read(&self, chip: u8, flags: FieldValue<u32, Command::Register>, data: &'static mut [u8], len: u8) {
         let twim = &TWIMRegisterManager::new(&self);
         self.dma.get().map(move |dma| {
             dma.enable();
@@ -1135,7 +1135,7 @@ impl I2CHw {
                     // Make it happen by clearing status.
                     twis.registers.scr.replace(status);
 
-                } else if interrupts.is_set(RXRDY) {
+                } else if interrupts.is_set(StatusSlave::RXRDY) {
                     // Receive byte ready.
 
                     if self.slave_write_buffer.is_some() {
@@ -1251,15 +1251,16 @@ impl I2CHw {
             let twis = &TWISRegisterManager::new(&self);
 
             // Enable and configure
-            let control = (((self.my_slave_address.get() as usize) & 0x7F) << 16) |
-                           (1 << 14) | // SOAM - stretch on address match
-                           (1 << 13) | // CUP - count nbytes up
-                           (1 << 4)  | // STREN - stretch clock enable
-                           (1 << 2); //.. SMATCH - ack on slave address
-            twis.registers.control.set(control as u32);
+            let control =
+                ControlSlave::ADR.val((self.my_slave_address.get() as u32) & 0x7F) +
+                ControlSlave::SOAM::Stretch +
+                ControlSlave::CUP::CountUp +
+                ControlSlave::STREN::Enable +
+                ControlSlave::SMATCH::AckSlaveAddress;
+            twis.registers.cr.write(control);
 
             // Set this separately because that makes the HW happy.
-            twis.registers.control.set((control as u32) | 0x1);
+            twis.registers.cr.write(control + ControlSlave::SEN::Enable);
         }
     }
 }
@@ -1277,26 +1278,28 @@ impl hil::i2c::I2CMaster for I2CHw {
         let twim = &TWIMRegisterManager::new(&self);
 
         // enable, reset, disable
-        twim.registers.control.set(0x1 << 0);
-        twim.registers.control.set(0x1 << 7);
-        twim.registers.control.set(0x1 << 1);
+        twim.registers.cr.write(Control::MEN::SET);
+        twim.registers.cr.write(Control::SWRST::SET);
+        twim.registers.cr.write(Control::MDIS::SET);
 
         // Init the bus speed
         self.set_bus_speed(twim);
 
         // slew
-        twim.registers
-            .slew_rate
-            .set((0x2 << 28) | (7 << 16) | (7 << 0));
+        twim.registers.srr.write(
+            SlewRate::FILTER::StandardOrFast +
+            SlewRate::CLDRIVEL.val(7) +
+            SlewRate::DADRIVEL.val(7)
+            );
 
         // clear interrupts
-        twim.registers.status_clear.set(!0);
+        twim.registers.scr.set(!0);
     }
 
     /// This disables the entire I2C peripheral
     fn disable(&self) {
         let twim = &TWIMRegisterManager::new(&self);
-        twim.registers.control.set(0x1 << 1);
+        twim.registers.cr.write(Control::MDIS::SET);
         self.disable_interrupts(twim);
     }
 
@@ -1319,25 +1322,29 @@ impl hil::i2c::I2CSlave for I2CHw {
             let twis = &TWISRegisterManager::new(&self);
 
             // enable, reset, disable
-            twis.registers.control.set(0x1 << 0);
-            twis.registers.control.set(0x1 << 7);
-            twis.registers.control.set(0);
+            twis.registers.cr.write(ControlSlave::SEN::SET);
+            twis.registers.cr.write(ControlSlave::SWRST::SET);
+            twis.registers.cr.set(0);
 
             // slew
-            twis.registers.slew_rate.set((0x2 << 28) | (7 << 0));
+            twis.registers.srr.write(SlewRateSlave::FILTER.val(0x2) +
+                SlewRateSlave::DADRIVEL.val(7));
 
             // clear interrupts
-            twis.registers.status_clear.set(!0);
+            twis.registers.scr.set(!0);
 
             // We want to interrupt only on slave address match so we can
             // wait for a message from a master and then decide what to do
             // based on read/write.
-            twis.registers.interrupt_enable.set(1 << 16);
+            twis.registers.ier.write(InterruptSlave::SAM::SET);
 
             // Also setup all of the error interrupts.
-            twis.registers
-                .interrupt_enable
-                .set((1 << 14) | (1 << 13) | (1 << 12) | (1 << 7) | (1 << 6));
+            twis.registers.ier.write(
+                InterruptSlave::BUSERR::SET +
+                InterruptSlave::SMBPECERR::SET +
+                InterruptSlave::SMBTOUT::SET +
+                InterruptSlave::ORUN::SET +
+                InterruptSlave::URUN::SET);
         }
 
         self.slave_enabled.set(true);
@@ -1349,7 +1356,7 @@ impl hil::i2c::I2CSlave for I2CHw {
 
         if self.slave_mmio_address.is_some() {
             let twis = &TWISRegisterManager::new(&self);
-            twis.registers.control.set(0);
+            twis.registers.cr.set(0);
             self.slave_disable_interrupts(twis);
         }
     }
