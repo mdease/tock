@@ -153,64 +153,6 @@ impl<T: IntLike, R: RegisterLongName> ReadWrite<T, R> {
     }
 }
 
-/// This behaves very similarly to a read-only register, but instead of doing a
-/// volatile read to MMIO to get the value for each function call, a copy of the
-/// register contents are stored locally in memory. This allows a peripheral
-/// to do a single read on a register, and then check which bits are set without
-/// having to do a full MMIO read each time. It also allows the value of the
-/// register to be "cached" in case the peripheral driver needs to clear the
-/// register in hardware yet still be able to check the bits.
-pub struct LocalRegisterCopy<T: IntLike, R: RegisterLongName = ()> {
-    value: T,
-    associated_register: PhantomData<R>,
-}
-
-#[allow(dead_code)]
-impl<T: IntLike, R: RegisterLongName> LocalRegisterCopy<T, R> {
-    pub const fn new(value: T) -> Self {
-        LocalRegisterCopy {
-            value: value,
-            associated_register: PhantomData,
-        }
-    }
-
-    #[inline]
-    pub fn get(&self) -> T {
-        self.value
-    }
-
-    #[inline]
-    pub fn read(&self, field: Field<T, R>) -> T {
-        (self.value & (field.mask << field.shift)) >> field.shift
-    }
-
-    #[inline]
-    pub fn is_set(&self, field: Field<T, R>) -> bool {
-        self.read(field) != T::zero()
-    }
-
-    #[inline]
-    pub fn matches_any(&self, field: FieldValue<T, R>) -> bool {
-        self.value & field.mask != T::zero()
-    }
-
-    #[inline]
-    pub fn matches_all(&self, field: FieldValue<T, R>) -> bool {
-        self.value & field.mask == field.value
-    }
-}
-
-impl<T: IntLike, R: RegisterLongName> BitAnd for LocalRegisterCopy<T, R> {
-    type Output = Self;
-
-    fn bitand(self, LocalRegisterCopy(rhs): Self) -> Self {
-        LocalRegisterCopy {
-            value: self.value & rhs.value,
-            associated_register: self.associated_register
-        }
-    }
-}
-
 #[allow(dead_code)]
 impl<T: IntLike, R: RegisterLongName> ReadOnly<T, R> {
     pub const fn new(value: T) -> Self {
@@ -273,6 +215,64 @@ impl<T: IntLike, R: RegisterLongName> WriteOnly<T, R> {
     #[inline]
     pub fn write(&self, field: FieldValue<T, R>) {
         self.set(field.value);
+    }
+}
+
+/// This behaves very similarly to a read-only register, but instead of doing a
+/// volatile read to MMIO to get the value for each function call, a copy of the
+/// register contents are stored locally in memory. This allows a peripheral
+/// to do a single read on a register, and then check which bits are set without
+/// having to do a full MMIO read each time. It also allows the value of the
+/// register to be "cached" in case the peripheral driver needs to clear the
+/// register in hardware yet still be able to check the bits.
+pub struct LocalRegisterCopy<T: IntLike, R: RegisterLongName = ()> {
+    value: T,
+    associated_register: PhantomData<R>,
+}
+
+#[allow(dead_code)]
+impl<T: IntLike, R: RegisterLongName> LocalRegisterCopy<T, R> {
+    pub const fn new(value: T) -> Self {
+        LocalRegisterCopy {
+            value: value,
+            associated_register: PhantomData,
+        }
+    }
+
+    #[inline]
+    pub fn get(&self) -> T {
+        self.value
+    }
+
+    #[inline]
+    pub fn read(&self, field: Field<T, R>) -> T {
+        (self.value & (field.mask << field.shift)) >> field.shift
+    }
+
+    #[inline]
+    pub fn is_set(&self, field: Field<T, R>) -> bool {
+        self.read(field) != T::zero()
+    }
+
+    #[inline]
+    pub fn matches_any(&self, field: FieldValue<T, R>) -> bool {
+        self.value & field.mask != T::zero()
+    }
+
+    #[inline]
+    pub fn matches_all(&self, field: FieldValue<T, R>) -> bool {
+        self.value & field.mask == field.value
+    }
+}
+
+impl<T: IntLike, R: RegisterLongName> BitAnd for LocalRegisterCopy<T, R> {
+    type Output = Self;
+
+    fn bitand(self, rhs: Self) -> Self {
+        LocalRegisterCopy {
+            value: self.value & rhs.value,
+            associated_register: self.associated_register
+        }
     }
 }
 
