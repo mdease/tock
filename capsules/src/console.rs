@@ -145,17 +145,8 @@ impl<'a, U: UART> Console<'a, U> {
                     buffer[i] = *c;
                 }
 
-                // Check if everything we wanted to print
-                // fit in the buffer.
-                if app.write_remaining > buffer.len() {
-                    transaction_len = buffer.len();
-                    app.write_remaining -= buffer.len();
-                    app.write_buffer = Some(slice);
-                } else {
-                    app.write_remaining = 0;
-                }
-
-                self.uart.transmit(buffer, transaction_len);
+                // oops, forgot a bounds check; the write length could be longer than the static kernel buffer length
+                self.uart.transmit(buffer, app.write_len);
             });
         } else {
             app.pending_write = true;

@@ -282,12 +282,6 @@ impl DMAChannel {
 
         let registers: &DMARegisters = unsafe { &*self.registers };
 
-        let maxlen = buf.len() / match self.width.get() {
-                DMAWidth::Width8Bit /*  DMA is acting on bytes     */ => 1,
-                DMAWidth::Width16Bit /* DMA is acting on halfwords */ => 2,
-                DMAWidth::Width32Bit /* DMA is acting on words     */ => 4,
-            };
-        len = cmp::min(len, maxlen);
         registers.mr.write(Mode::SIZE.val(self.width.get() as u32));
 
         registers.psr.set(pid);
